@@ -8,9 +8,16 @@
 #   Linux  -> podman (preferito) oppure docker
 #
 # Compatibile con la bash 3.2 di macOS.
+#
+# Versione 1.1 (2026-10-08)
+#   - Linux: --cpus/--memory applicati solo se il kernel concede i relativi
+#     controller dei cgroup (es. Raspberry Pi con cgroup_disable=memory);
+#     --memory-swap uguale a --memory (nessuno swap aggiuntivo).
+#   - Linux: "localhost" nel base URL sostituito con 127.0.0.1.
 set -euo pipefail
 
 PI_BOX_HOME="${PI_BOX_HOME:-$HOME/pi-container}"
+CGROUP_ROOT="${PI_BOX_CGROUP_ROOT:-/sys/fs/cgroup}"   # sovrascrivibile solo per i test
 CONF_FILE="$PI_BOX_HOME/pi-box.conf"
 AGENT_DIR="$PI_BOX_HOME/agent"
 IMAGE_DIR="$PI_BOX_HOME/image"
@@ -213,12 +220,19 @@ if [ "$DRY_RUN" = false ]; then
 fi
 
 # Su macOS il container non vede il localhost del Mac: si usa il dominio
-# host.container.internal. Su Linux si usa la rete dell'host (--network host).
+# host.container.internal. Su Linux si usa la rete dell'host (--network host);
+# "localhost" diventa 127.0.0.1 perché Node potrebbe risolverlo in ::1 (IPv6)
+# e non trovare un server in ascolto solo su IPv4.
 CONTAINER_BASE_URL="$BASE_URL"
 if [ "$RT" = container ]; then
   re_loop='^(https?://)(127\.0\.0\.1|localhost|\[::1\])([:/].*)?$'
   if [[ $BASE_URL =~ $re_loop ]]; then
     CONTAINER_BASE_URL="${BASH_REMATCH[1]}host.container.internal${BASH_REMATCH[3]}"
+  fi
+else
+  re_lh='^(https?://)localhost([:/].*)?$'
+  if [[ $BASE_URL =~ $re_lh ]]; then
+    CONTAINER_BASE_URL="${BASH_REMATCH[1]}127.0.0.1${BASH_REMATCH[2]}"
   fi
 fi
 
@@ -356,6 +370,65 @@ macos_prepare() {
 }
 
 # ---------------------------------------------------------------------------
+# Limiti di risorse su Linux
+# ---------------------------------------------------------------------------
+# Stampa i controller dei cgroup v2 utilizzabili dai container, separati da
+# spazi; non stampa nulla se non è possibile determinarli.
+linux_cgroup_controllers() {
+  local out="" f uid
+  uid="$(id -u)"
+  case "$RT" in
+    podman)
+      out="$(podman info --format '{{.Host.CgroupControllers}}' 2>/dev/null || true)"
+      out="$(printf '%s' "$out" | tr -d '[]')"
+      ;;
+    docker)
+      local mem cpu
+      if read -r mem cpu < <(docker info --format '{{.MemoryLimit}} {{.CPUCfsQuota}}' 2>/dev/null) \
+         && [ -n "${cpu:-}" ]; then
+        out="pids"
+        if [ "$mem" = true ]; then out="$out memory"; fi
+        if [ "$cpu" = true ]; then out="$out cpu"; fi
+      fi
+      ;;
+  esac
+  if [ -z "$out" ]; then
+    # podman senza root usa i controller delegati da systemd all'utente
+    if [ "$RT" = podman ] && [ "$uid" -ne 0 ]; then
+      f="$CGROUP_ROOT/user.slice/user-$uid.slice/user@$uid.service/cgroup.controllers"
+    else
+      f="$CGROUP_ROOT/cgroup.controllers"
+    fi
+    if [ -r "$f" ]; then out="$(cat "$f")"; fi
+  fi
+  printf '%s' "$out" | tr -s '[:space:]' ' '
+}
+
+add_linux_limits() {
+  [ -n "$CPUS" ] || [ -n "$MEMORY" ] || return 0
+  local ctrls
+  ctrls=" $(linux_cgroup_controllers) "
+  if [ -z "${ctrls// /}" ]; then
+    info "attenzione: impossibile verificare i cgroup, applico comunque i limiti richiesti"
+    if [ -n "$CPUS" ];   then RUN_ARGS+=(--cpus "$CPUS"); fi
+    if [ -n "$MEMORY" ]; then RUN_ARGS+=(--memory "$MEMORY" --memory-swap "$MEMORY"); fi
+    return 0
+  fi
+  if [ -n "$CPUS" ]; then
+    case "$ctrls" in
+      *" cpu "*) RUN_ARGS+=(--cpus "$CPUS") ;;
+      *) info "attenzione: il controller 'cpu' dei cgroup non è disponibile: avvio senza limite di CPU (per non vedere l'avviso: CPUS=\"\" in $CONF_FILE)" ;;
+    esac
+  fi
+  if [ -n "$MEMORY" ]; then
+    case "$ctrls" in
+      *" memory "*) RUN_ARGS+=(--memory "$MEMORY" --memory-swap "$MEMORY") ;;
+      *) info "attenzione: il controller 'memory' dei cgroup non è disponibile: avvio senza limite di memoria (per non vedere l'avviso: MEMORY=\"\" in $CONF_FILE)" ;;
+    esac
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Comando di avvio
 # ---------------------------------------------------------------------------
 RUN_ARGS=(run -it --rm)
@@ -363,8 +436,13 @@ case "$RT" in
   podman) RUN_ARGS+=(--network host --userns=keep-id) ;;
   docker) RUN_ARGS+=(--network host) ;;
 esac
-if [ -n "$CPUS" ];   then RUN_ARGS+=(--cpus "$CPUS"); fi
-if [ -n "$MEMORY" ]; then RUN_ARGS+=(--memory "$MEMORY"); fi
+if [ "$RT" = container ]; then
+  # macOS: ogni container è una VM leggera, i limiti si applicano sempre
+  if [ -n "$CPUS" ];   then RUN_ARGS+=(--cpus "$CPUS"); fi
+  if [ -n "$MEMORY" ]; then RUN_ARGS+=(--memory "$MEMORY"); fi
+else
+  add_linux_limits
+fi
 RUN_ARGS+=(--volume "$AGENT_DIR:/home/dev/.pi/agent" --volume "$PROJECT:/work")
 if [ "$OFFLINE" = true ]; then RUN_ARGS+=(--env PI_OFFLINE=1); fi
 RUN_ARGS+=("$IMAGE")
