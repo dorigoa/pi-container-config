@@ -1,7 +1,5 @@
 # Pi con modelli locali, anche dentro un container (macOS e Ubuntu)
 
-*Riepilogo della sessione dell'8 ottobre 2026 — Pi 1.1.0, Apple `container` 1.3.1, macOS 27.0.1*
-
 ---
 
 ## 0. Il quadro d'insieme
