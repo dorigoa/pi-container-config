@@ -1,0 +1,49 @@
+{
+  "providers": {
+    "llama.cpp": {
+      "baseUrl": "http://localhost:18088/v1",
+      "api": "openai-completions",
+      "apiKey": "llama",
+      "models": [
+        { "id": "default_model"
+	        "name": "Llama Inference Engine (MacStudio2)"
+	        "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 262144,
+          "maxTokens": 262144,
+          "samplingParams": { "temperature": 0.6, "top_p": 0.95 }
+	      }
+      ]
+    }
+    "Strata": {
+      "baseUrl": "http://localhost:8000/v1",
+      "api": "openai-completions",
+      "apiKey": "strata",
+      "models": [
+        { "id": "qwen3.8-flash-next-unsloth-ud-q4_k_xl"
+	        "name": "Strata Inference Engine (PC Linux)"
+	        "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 262144,
+          "maxTokens": 262144,
+          "samplingParams": { "temperature": 0.6, "top_p": 0.95 }
+	      }
+      ]
+    }
+    "MLX": {
+      "baseUrl": "http://localhost:8080/v1",
+      "api": "openai-completions",
+      "apiKey": "strata",
+      "models": [
+        { "id": "default_models"
+	        "name": "MLX Inference Engine (MacStudio1)"
+	        "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 262144,
+          "maxTokens": 262144,
+          "samplingParams": { "temperature": 0.6, "top_p": 0.95 }
+	      }
+      ]
+    }
+  }
+}
