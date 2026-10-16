@@ -19,11 +19,11 @@ PIBOX_CMD="${PIBOX_CMD:-pi-box}"
 
 # Default (usati se nodes.json manca o manca la voce per quel provider)
 declare -A DEFAULT_PORT=(
-    [llama]=8080
-    [mlx]=8090
+    [llama]=8088
+    [mlx]=8080
     [strata]=8091
-    [splash]=8092
-    [freetoken]=8093
+    [splash]=10000
+    [freetoken]=1919
 )
 declare -A DEFAULT_MODEL=(
     [llama]="llama-default"
@@ -37,7 +37,7 @@ VALID_PROVIDERS=(llama mlx strata splash freetoken)
 
 usage() {
     echo "Uso: $0 [llama|mlx|strata|splash|freetoken] [...]" >&2
-    echo "Provider disponibili: ${VALID_PROVIDERS[*]}" >&2
+    echo "Available providers: ${VALID_PROVIDERS[*]}" >&2
     exit 1
 }
 
@@ -47,7 +47,7 @@ for a in "$@"; do
     for p in "${VALID_PROVIDERS[@]}"; do
         [ "$a" = "$p" ] && ok=1
     done
-    [ $ok -eq 1 ] || { echo "Provider non valido: $a" >&2; usage; }
+    [ $ok -eq 1 ] || { echo "Invalid Provider: $a" >&2; usage; }
 done
 
 # Legge un campo da nodes.json (jq se disponibile, altrimenti python3)
@@ -70,7 +70,7 @@ except Exception:
     pass
 ' "$NODES_JSON" "$provider" "$field" 2>/dev/null
     else
-        echo "ERR: serve jq o python3 per leggere $NODES_JSON" >&2
+        echo "ERR: serve jq or python3 to read $NODES_JSON" >&2
         return 1
     fi
 }
@@ -80,7 +80,7 @@ resolve_model_id() {
     local port="$1" model_name="$2"
     local resp
     resp=$(curl -sf --max-time 10 "http://localhost:${port}/v1/models") || {
-        echo "ERRORE: API http://localhost:${port}/v1/models non raggiungibile" >&2
+        echo "ERROR: API http://localhost:${port}/v1/models unreachable" >&2
         return 1
     }
 
@@ -122,33 +122,33 @@ for e in models:
 sys.exit(1)
 ' "$resp" "$model_name"
     else
-        echo "ERRORE: serve jq o python3 per parsare la risposta dell'API" >&2
+        echo "ERROR: jq o python3 required to parse API response" >&2
         return 1
     fi
 }
 
 for provider in "$@"; do
-    echo "=== Avvio provider: $provider ==="
+    echo "=== Start provider: $provider ==="
 
     port=$(json_get "$provider" "port" || true)
     model=$(json_get "$provider" "model" || true)
     [ -n "$port" ]  || port="${DEFAULT_PORT[$provider]}"
     [ -n "$model" ] || model="${DEFAULT_MODEL[$provider]}"
-    [ -n "$model" ] || { echo "ERRORE: nessun modello configurato per $provider" >&2; continue; }
+    [ -n "$model" ] || { echo "ERROR: no model configured for $provider" >&2; continue; }
 
-    echo "  port: $port, modello dichiarato: $model"
+    echo "  port: $port, declared model: $model"
 
     model_id=$(resolve_model_id "$port" "$model") || {
-        echo "ERRORE: impossibile risolvere model_id per '$model' (port $port)" >&2
+        echo "ERROR: it was not possible to solve the model_id for '$model' (port $port)" >&2
         continue
     }
     [ -n "$model_id" ] || {
-        echo "ERRORE: nessun model_id corrispondente a '$model' nell'API (port $port)" >&2
+        echo "ERROR: no model_id corresponding to '$model' in the API (port $port)" >&2
         continue
     }
-    echo "  model_id risolto: $model_id"
+    echo "  model_id solved: $model_id"
 
     "$PIBOX_CMD" -u "http://localhost:${port}/v1" \
         -c 262144 -o 131072 -t medium -r on -m "$model_id"
-    echo "=== $provider terminato ==="
+    echo "=== $provider terminated ==="
 done
