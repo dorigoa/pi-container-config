@@ -1,17 +1,5 @@
 #!/usr/bin/env bash
-#
-# pi-start.sh — lancia istanze pi-box per i provider: llama, mlx, strata, splash, freetoken
-#
-# Uso:
-#   ./pi-start.sh [llama] [mlx] [strata] [splash] [freetoken] [...]
-#
-# Per ogni argomento dato:
-#   1. legge port e nome modello da ~/ai-console/nodes.json (se presente)
-#   2. interroga http://localhost:PORT/v1/models per ottenere il vero model_id
-#   3. lancia: pi-box -u http://localhost:PORT/v1 -c 262144 -o 131072 -t medium -r on -m "model_id"
-#
-# I comandi vengono lanciati in sequenza, nell'ordine specificato.
-# curl -k http://localhost:10000/v1/models|jq ".data[0].id"
+
 set -euo pipefail
 
 NODES_JSON="${HOME}/ai-console/nodes.json"
@@ -50,17 +38,8 @@ for a in "$@"; do
     [ $ok -eq 1 ] || { echo "Invalid Provider: $a" >&2; usage; }
 done
 
-# Legge un campo da nodes.json (jq se disponibile, altrimenti python3)
-#echo $1
-#port=$(cat $NODES_JSON|jq '.NODES.\${1}.api_port')
 port=$(jq ".NODES[\"$1\"].api_port" "$NODES_JSON")
 
-#echo $port
-#exit 1
-
 model=$(curl -k http://localhost:$port/v1/models|jq '.data[0].id'|sed 's+\"++g')
-
-cmd="pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r on -m $model"
-echo "executing [$cmd]"
 
 pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r on -m $model
