@@ -221,7 +221,7 @@ re_pkgs='^[]A-Za-z0-9._+=<>!~,:@/ [-]*$'
 [[ $BASE_URL =~ $re_url ]]       || die "invalid base URL: $BASE_URL"
 [[ $CONTEXT_WINDOW =~ $re_int ]] || die "--ctx must be an integer"
 [[ $MAX_TOKENS =~ $re_int ]]     || die "--max-tokens must be an integer"
-[ "$MAX_TOKENS" -lt "$CONTEXT_WINDOW" ] || die "--max-tokens must be less than --ctx"
+[ "$MAX_TOKENS" -le "$CONTEXT_WINDOW" ] || die "--max-tokens must be less than --ctx"
 [[ $API_KEY =~ $re_safe ]]       || die "the API key cannot contain \" or \\"
 [ -z "$TEMPERATURE" ] || [[ $TEMPERATURE =~ $re_num ]] || die "invalid --temperature"
 [ -z "$TOP_P" ]       || [[ $TOP_P =~ $re_num ]]       || die "invalid --top-p"
