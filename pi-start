@@ -42,4 +42,6 @@ port=$(jq ".NODES[\"$1\"].api_port" "$NODES_JSON")
 
 model=$(curl -k http://localhost:$port/v1/models|jq '.data[0].id'|sed 's+\"++g')
 
+echo 'Running pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r on -m $model'
+
 pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r on -m $model
