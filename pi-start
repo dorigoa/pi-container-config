@@ -11,7 +11,7 @@
 #   3. lancia: pi-box -u http://localhost:PORT/v1 -c 262144 -o 131072 -t medium -r on -m "model_id"
 #
 # I comandi vengono lanciati in sequenza, nell'ordine specificato.
-
+# curl -k http://localhost:10000/v1/models|jq ".data[0].id"
 set -euo pipefail
 
 NODES_JSON="${HOME}/ai-console/nodes.json"
@@ -36,7 +36,7 @@ declare -A DEFAULT_MODEL=(
 VALID_PROVIDERS=(llama mlx strata splash freetoken)
 
 usage() {
-    echo "Uso: $0 [llama|mlx|strata|splash|freetoken] [...]" >&2
+    echo "Usage: $0 [llama|mlx|strata|splash|freetoken] [...]" >&2
     echo "Available providers: ${VALID_PROVIDERS[*]}" >&2
     exit 1
 }
@@ -51,104 +51,16 @@ for a in "$@"; do
 done
 
 # Legge un campo da nodes.json (jq se disponibile, altrimenti python3)
-json_get() {
-    local provider="$1" field="$2"
-    [ -f "$NODES_JSON" ] || return 1
-    if command -v jq >/dev/null 2>&1; then
-        jq -r --arg p "$provider" --arg f "$field" \
-            '.[$p][$f] // empty' "$NODES_JSON" 2>/dev/null
-    elif command -v python3 >/dev/null 2>&1; then
-        python3 -c '
-import json, sys
-try:
-    with open(sys.argv[1]) as fh:
-        data = json.load(fh)
-    v = data.get(sys.argv[2], {}).get(sys.argv[3])
-    if v is not None:
-        print(v)
-except Exception:
-    pass
-' "$NODES_JSON" "$provider" "$field" 2>/dev/null
-    else
-        echo "ERR: serve jq or python3 to read $NODES_JSON" >&2
-        return 1
-    fi
-}
+#echo $1
+#port=$(cat $NODES_JSON|jq '.NODES.\${1}.api_port')
+port=$(jq ".NODES[\"$1\"].api_port" "$NODES_JSON")
 
-# Ritorna il model_id dall'API /v1/models, cercando per nome
-resolve_model_id() {
-    local port="$1" model_name="$2"
-    local resp
-    resp=$(curl -sf --max-time 10 "http://localhost:${port}/v1/models") || {
-        echo "ERROR: API http://localhost:${port}/v1/models unreachable" >&2
-        return 1
-    }
+#echo $port
+#exit 1
 
-    if command -v jq >/dev/null 2>&1; then
-        # Il modello cercato può comparire nei campi name, id o model_id
-        echo "$resp" | jq -r --arg m "$model_name" '
-            [ .data[]? // .models[]? // .[]? ] as $models
-            | ( ($models | map(select(
-                    ((.model_id? // .id? // .name? // "") | tostring) | ascii_downcase == ($m | ascii_downcase)
-                  )) | first)
-                // ($models | map(select(
-                    ((.name? // "") + " " + (.model_id? // "") + " " + (.id? // ""))
-                    | tostring | ascii_downcase | contains($m | ascii_downcase)
-                  )) | first) ) as $match
-            | if $match == null then empty
-              else ($match | .model_id // .id // .name)
-              end'
-    elif command -v python3 >/dev/null 2>&1; then
-        python3 -c '
-import json, sys
-try:
-    resp = json.loads(sys.argv[1])
-except Exception:
-    sys.exit(1)
-m = sys.argv[2].lower()
-models = resp.get("data") or resp.get("models") or (resp if isinstance(resp, list) else [])
-# match esatto su model_id/id/name
-for e in models:
-    for k in ("model_id", "id", "name"):
-        if str(e.get(k, "")).lower() == m:
-            print(e.get("model_id") or e.get("id") or e.get("name"))
-            sys.exit(0)
-# match parziale
-for e in models:
-    blob = " ".join(str(e.get(k, "")) for k in ("name", "model_id", "id")).lower()
-    if m in blob:
-        print(e.get("model_id") or e.get("id") or e.get("name"))
-        sys.exit(0)
-sys.exit(1)
-' "$resp" "$model_name"
-    else
-        echo "ERROR: jq o python3 required to parse API response" >&2
-        return 1
-    fi
-}
+model=$(curl -k http://localhost:$port/v1/models|jq '.data[0].id'|sed 's+\"++g')
 
-for provider in "$@"; do
-    echo "=== Start provider: $provider ==="
+cmd="pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r on -m $model"
+echo "executing [$cmd]"
 
-    port=$(json_get "$provider" "port" || true)
-    model=$(json_get "$provider" "model" || true)
-    [ -n "$port" ]  || port="${DEFAULT_PORT[$provider]}"
-    [ -n "$model" ] || model="${DEFAULT_MODEL[$provider]}"
-    [ -n "$model" ] || { echo "ERROR: no model configured for $provider" >&2; continue; }
-
-    echo "  port: $port, declared model: $model"
-
-    model_id=$(resolve_model_id "$port" "$model") || {
-        echo "ERROR: it was not possible to solve the model_id for '$model' (port $port)" >&2
-        continue
-    }
-    [ -n "$model_id" ] || {
-        echo "ERROR: no model_id corresponding to '$model' in the API (port $port)" >&2
-        continue
-    }
-    echo "  model_id solved: $model_id"
-
-    "$PIBOX_CMD" -u "http://localhost:${port}/v1" \
-        -c 262144 -o 131072 -t medium -r on -m "$model_id"
-    echo "=== $provider terminated ==="
-done
+pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r on -m $model
