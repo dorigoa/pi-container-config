@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+#
+# pi-start.sh — lancia istanze pi-box per i provider: llama, mlx, strata, splash, freetoken
+#
+# Uso:
+#   ./pi-start.sh [llama] [mlx] [strata] [splash] [freetoken] [...]
+#
+# Per ogni argomento dato:
+#   1. legge port e nome modello da ~/ai-console/nodes.json (se presente)
+#   2. interroga http://localhost:PORT/v1/models per ottenere il vero model_id
+#   3. lancia: pi-box -u http://localhost:PORT/v1 -c 262144 -o 131072 -t medium -r on -m "model_id"
+#
+# I comandi vengono lanciati in sequenza, nell'ordine specificato.
+
+set -euo pipefail
+
+NODES_JSON="${HOME}/ai-console/nodes.json"
+PIBOX_CMD="${PIBOX_CMD:-pi-box}"
+
+# Default (usati se nodes.json manca o manca la voce per quel provider)
+declare -A DEFAULT_PORT=(
+    [llama]=8080
+    [mlx]=8090
+    [strata]=8091
+    [splash]=8092
+    [freetoken]=8093
+)
+declare -A DEFAULT_MODEL=(
+    [llama]="llama-default"
+    [mlx]="mlx-default"
+    [strata]="strata-default"
+    [splash]="splash-default"
+    [freetoken]="freetoken-default"
+)
+
+VALID_PROVIDERS=(llama mlx strata splash freetoken)
+
+usage() {
+    echo "Uso: $0 [llama|mlx|strata|splash|freetoken] [...]" >&2
+    echo "Provider disponibili: ${VALID_PROVIDERS[*]}" >&2
+    exit 1
+}
+
+[ $# -ge 1 ] || usage
+for a in "$@"; do
+    ok=0
+    for p in "${VALID_PROVIDERS[@]}"; do
+        [ "$a" = "$p" ] && ok=1
+    done
+    [ $ok -eq 1 ] || { echo "Provider non valido: $a" >&2; usage; }
+done
+
+# Legge un campo da nodes.json (jq se disponibile, altrimenti python3)
+json_get() {
+    local provider="$1" field="$2"
+    [ -f "$NODES_JSON" ] || return 1
+    if command -v jq >/dev/null 2>&1; then
+        jq -r --arg p "$provider" --arg f "$field" \
+            '.[$p][$f] // empty' "$NODES_JSON" 2>/dev/null
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        data = json.load(fh)
+    v = data.get(sys.argv[2], {}).get(sys.argv[3])
+    if v is not None:
+        print(v)
+except Exception:
+    pass
+' "$NODES_JSON" "$provider" "$field" 2>/dev/null
+    else
+        echo "ERR: serve jq o python3 per leggere $NODES_JSON" >&2
+        return 1
+    fi
+}
+
+# Ritorna il model_id dall'API /v1/models, cercando per nome
+resolve_model_id() {
+    local port="$1" model_name="$2"
+    local resp
+    resp=$(curl -sf --max-time 10 "http://localhost:${port}/v1/models") || {
+        echo "ERRORE: API http://localhost:${port}/v1/models non raggiungibile" >&2
+        return 1
+    }
+
+    if command -v jq >/dev/null 2>&1; then
+        # Il modello cercato può comparire nei campi name, id o model_id
+        echo "$resp" | jq -r --arg m "$model_name" '
+            [ .data[]? // .models[]? // .[]? ] as $models
+            | ( ($models | map(select(
+                    ((.model_id? // .id? // .name? // "") | tostring) | ascii_downcase == ($m | ascii_downcase)
+                  )) | first)
+                // ($models | map(select(
+                    ((.name? // "") + " " + (.model_id? // "") + " " + (.id? // ""))
+                    | tostring | ascii_downcase | contains($m | ascii_downcase)
+                  )) | first) ) as $match
+            | if $match == null then empty
+              else ($match | .model_id // .id // .name)
+              end'
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c '
+import json, sys
+try:
+    resp = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+m = sys.argv[2].lower()
+models = resp.get("data") or resp.get("models") or (resp if isinstance(resp, list) else [])
+# match esatto su model_id/id/name
+for e in models:
+    for k in ("model_id", "id", "name"):
+        if str(e.get(k, "")).lower() == m:
+            print(e.get("model_id") or e.get("id") or e.get("name"))
+            sys.exit(0)
+# match parziale
+for e in models:
+    blob = " ".join(str(e.get(k, "")) for k in ("name", "model_id", "id")).lower()
+    if m in blob:
+        print(e.get("model_id") or e.get("id") or e.get("name"))
+        sys.exit(0)
+sys.exit(1)
+' "$resp" "$model_name"
+    else
+        echo "ERRORE: serve jq o python3 per parsare la risposta dell'API" >&2
+        return 1
+    fi
+}
+
+for provider in "$@"; do
+    echo "=== Avvio provider: $provider ==="
+
+    port=$(json_get "$provider" "port" || true)
+    model=$(json_get "$provider" "model" || true)
+    [ -n "$port" ]  || port="${DEFAULT_PORT[$provider]}"
+    [ -n "$model" ] || model="${DEFAULT_MODEL[$provider]}"
+    [ -n "$model" ] || { echo "ERRORE: nessun modello configurato per $provider" >&2; continue; }
+
+    echo "  port: $port, modello dichiarato: $model"
+
+    model_id=$(resolve_model_id "$port" "$model") || {
+        echo "ERRORE: impossibile risolvere model_id per '$model' (port $port)" >&2
+        continue
+    }
+    [ -n "$model_id" ] || {
+        echo "ERRORE: nessun model_id corrispondente a '$model' nell'API (port $port)" >&2
+        continue
+    }
+    echo "  model_id risolto: $model_id"
+
+    "$PIBOX_CMD" -u "http://localhost:${port}/v1" \
+        -c 262144 -o 131072 -t medium -r on -m "$model_id"
+    echo "=== $provider terminato ==="
+done
