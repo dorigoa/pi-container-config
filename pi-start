@@ -42,6 +42,14 @@ port=$(jq ".NODES[\"$1\"].api_port" "$NODES_JSON")
 
 model=$(curl -k http://localhost:$port/v1/models|jq '.data[0].id'|sed 's+\"++g')
 
-echo 'Running pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r on -m $model'
+if [ "$1" = "mlx" ]; then
+    reasoning=off
+    ctx="131072"
+else
+    reasoning=on
+    ctx="262144"
+fi
 
-pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r on -m $model
+echo "Running pi-box -u http://localhost:$port/v1 -c $ctx -o 131072 -t medium -r $reasoning -m $model"
+
+pi-box -u http://localhost:$port/v1 -c $ctx -o 131072 -t medium -r "$reasoning" -m "$model"
