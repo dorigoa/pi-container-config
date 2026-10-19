@@ -7,7 +7,7 @@ PIBOX_CMD="${PIBOX_CMD:-pi-box}"
 
 # Default (usati se nodes.json manca o manca la voce per quel provider)
 declare -A DEFAULT_PORT=(
-    [llama]=8088
+    [llama]=11000
     [mlx]=8080
     [strata]=8091
     [splash]=10000
@@ -39,9 +39,7 @@ for a in "$@"; do
 done
 
 port=$(jq ".NODES[\"$1\"].api_port" "$NODES_JSON")
-
 model=$(curl -k http://localhost:$port/v1/models|jq '.data[0].id'|sed 's+\"++g')
-
 if [ "$1" = "mlx" ]; then
     reasoning=off
     #ctx="131072"
