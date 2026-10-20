@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Avvia pi-box verso un provider locale.
+# Uso: run-pibox.sh <provider> [-temp <float>]
 
 set -euo pipefail
 
@@ -24,35 +26,103 @@ declare -A DEFAULT_MODEL=(
 VALID_PROVIDERS=(llama mlx strata splash freetoken)
 
 usage() {
-    echo "Usage: $0 [llama|mlx|strata|splash|freetoken] [...]" >&2
+    echo "Usage: $0 <provider> [-temp <float>]" >&2
     echo "Available providers: ${VALID_PROVIDERS[*]}" >&2
     exit 1
 }
 
-[ $# -ge 1 ] || usage
-for a in "$@"; do
-    ok=0
+die() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+is_valid_provider() {
+    local p
     for p in "${VALID_PROVIDERS[@]}"; do
-        [ "$a" = "$p" ] && ok=1
+        [[ "$1" == "$p" ]] && return 0
     done
-    [ $ok -eq 1 ] || { echo "Invalid Provider: $a" >&2; usage; }
+    return 1
+}
+
+for bin in jq curl "$PIBOX_CMD"; do
+    command -v "$bin" >/dev/null 2>&1 || die "'$bin' not found in PATH"
 done
 
-port=$(jq ".NODES[\"$1\"].api_port" "$NODES_JSON")
-model=$(curl -k http://localhost:$port/v1/models|jq '.data[0].id'|sed 's+\"++g')
-if [ "$1" = "mlx" ]; then
+# --- Parsing argomenti -------------------------------------------------------
+provider=""
+temp=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -temp|--temp)
+            [[ -n "${2-}" ]] || die "option $1 requires a value"
+            temp="$2"
+            shift 2
+            ;;
+        -temp=*|--temp=*)
+            temp="${1#*=}"
+            [[ -n "$temp" ]] || die "option ${1%%=*} requires a value"
+            shift
+            ;;
+        -h|--help)
+            usage
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            usage
+            ;;
+        *)
+            is_valid_provider "$1" || { echo "Invalid provider: $1" >&2; usage; }
+            [[ -z "$provider" ]] || die "only one provider allowed (got '$provider' and '$1')"
+            provider="$1"
+            shift
+            ;;
+    esac
+done
+
+[[ -n "$provider" ]] || usage
+
+if [[ -n "$temp" ]]; then
+    temp="${temp/,/.}"   # accetta anche la virgola decimale (0,7 -> 0.7)
+    [[ "$temp" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] \
+        || die "-temp must be a non-negative number, got '$temp'"
+fi
+
+# --- Porta: da nodes.json, altrimenti default ---------------------------------
+port=""
+if [[ -r "$NODES_JSON" ]]; then
+    port=$(jq -r --arg p "$provider" '.NODES[$p].api_port // empty' "$NODES_JSON") \
+        || die "cannot parse $NODES_JSON"
+fi
+port="${port:-${DEFAULT_PORT[$provider]}}"
+[[ "$port" =~ ^[0-9]+$ ]] || die "invalid port '$port' for provider '$provider'"
+
+base_url="http://localhost:${port}/v1"
+
+# --- Modello: dal server, altrimenti default ----------------------------------
+models_json=$(curl -fsS --max-time 10 "${base_url}/models") \
+    || die "server not reachable at ${base_url}/models"
+model=$(jq -r '.data[0].id // empty' <<<"$models_json" 2>/dev/null || true)
+if [[ -z "$model" ]]; then
+    echo "Warning: no model id from ${base_url}/models, using default" >&2
+    model="${DEFAULT_MODEL[$provider]}"
+fi
+
+if [[ "$provider" == "mlx" ]]; then
     reasoning=off
-    #ctx="131072"
 else
     reasoning=on
-    #ctx="262144"
-fi
-if "$2" = "" ]; then
-    temp="1.0"
-else
-    temp="$2"
 fi
 
-echo "Running pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r $reasoning -m $model"
+# --- Costruzione ed esecuzione comando ----------------------------------------
+cmd=("$PIBOX_CMD" -u "$base_url" -c 262144 -o 131072 -t medium -r "$reasoning" -m "$model")
+if [[ -n "$temp" ]]; then
+    cmd+=(--temperature "$temp")
+fi
+cmd+=(-n "$provider - $model")
 
-pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r "$reasoning" -m "$model" --temperature $temp -n "$1 - $model"
+printf 'Running:'
+printf ' %q' "${cmd[@]}"
+printf '\n'
+
+exec "${cmd[@]}"
