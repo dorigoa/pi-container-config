@@ -47,7 +47,12 @@ else
     reasoning=on
     #ctx="262144"
 fi
+if "$2" = "" ]; then
+    temp="1.0"
+else
+    temp="$2"
+fi
 
 echo "Running pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r $reasoning -m $model"
 
-pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r "$reasoning" -m "$model"
+pi-box -u http://localhost:$port/v1 -c 262144 -o 131072 -t medium -r "$reasoning" -m "$model" --temperature $temp -n "$1 - $model"
