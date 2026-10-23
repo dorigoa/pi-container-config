@@ -11,7 +11,7 @@ PIBOX_CMD="${PIBOX_CMD:-pi-box}"
 declare -A DEFAULT_PORT=(
     [llama]=11000
     [mlx]=8080
-    [strata]=8091
+    [strata]=8000
     [splash]=10000
     [freetoken]=1919
 )
