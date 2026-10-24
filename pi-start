@@ -9,14 +9,16 @@ PIBOX_CMD="${PIBOX_CMD:-pi-box}"
 
 # Default (usati se nodes.json manca o manca la voce per quel provider)
 declare -A DEFAULT_PORT=(
-    [llama]=11000
+    [llama-linux]=11000
+    [llama-macos]=9088
     [mlx]=8080
     [strata]=8000
     [splash]=10000
     [freetoken]=1919
 )
 declare -A DEFAULT_MODEL=(
-    [llama]="llama-default"
+    [llama-linux]="llama-linux-default"
+    [llama-macos]="llama-macos-default"
     [mlx]="mlx-default"
     [strata]="strata-default"
     [splash]="splash-default"
