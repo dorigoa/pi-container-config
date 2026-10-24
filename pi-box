@@ -9,6 +9,12 @@
 #
 # Compatible with macOS's bash 3.2.
 #
+# Version 1.3 (2026-10-24)
+#   - Pi 1.4.0 in the image (was 1.1.0). PI_VERSION is pinned to a specific
+#     version, so the image is rebuilt automatically when it changes.
+#   - PI_VERSION="latest" now resolves the newest npm release (cached one day
+#     in ~/pi-container/.latest-pi): a new Pi release triggers a rebuild
+#     instead of keeping the old image forever. --pi-version selects a version.
 # Version 1.2 (2026-10-08)
 #   - Full development image: C/C++ (gcc, clang, cmake, gdb, valgrind,
 #     common libraries) and Python (numpy, scipy, pygame, logzero, ...) in a
@@ -22,7 +28,7 @@
 #     controllers; --memory-swap equal to --memory. "localhost" -> 127.0.0.1.
 set -euo pipefail
 
-PI_BOX_VERSION="1.2"
+PI_BOX_VERSION="1.3"
 PI_BOX_HOME="${PI_BOX_HOME:-$HOME/pi-container}"
 CGROUP_ROOT="${PI_BOX_CGROUP_ROOT:-/sys/fs/cgroup}"   # override for testing only
 CONF_FILE="$PI_BOX_HOME/pi-box.conf"
@@ -52,7 +58,7 @@ CPUS=4                                # empty = no limit
 MEMORY=4g                             # empty = no limit
 OFFLINE=true                          # disables Pi's automatic network activity
 IMAGE="pi-box:latest"
-PI_VERSION="latest"                   # Pi npm version to install in the image
+PI_VERSION="1.4.0"                    # Pi npm version to install in the image ("latest" = newest release on npm)
 BASE_IMAGE="node:24-slim"             # base image (Debian + Node.js)
 APT_EXTRA=""                          # extra Debian packages
 PIP_PACKAGES="ruff mypy rich tqdm click httpx ipython"   # extra pip packages
@@ -84,7 +90,9 @@ OFFLINE=true
 
 # --- Image (changing these triggers an automatic rebuild) --------------------
 IMAGE="pi-box:latest"
-PI_VERSION="latest"
+# Pi version inside the image: pin a version (a change triggers a rebuild) or
+# use "latest", which pi-box resolves through the npm registry (cached 1 day).
+PI_VERSION="1.4.0"
 BASE_IMAGE="node:24-slim"             # e.g. node:24-trixie-slim to pin Debian 13
 # Extra Debian packages, space-separated (e.g. "libopencv-dev octave")
 APT_EXTRA=""
@@ -118,6 +126,8 @@ Container
   -p, --project DIR       project folder mounted at /work (default: current folder)
       --cpus N            CPU limit ("" = none)
       --memory M          RAM limit, e.g. 4g ("" = none)
+      --pi-version VER    Pi version to install in the image (default: 1.4.0;
+                          "latest" = newest release on npm)
       --rebuild           rebuild the image from scratch (no cache), then start
       --build-only        (re)build the image if needed, then exit
       --shell             open a bash shell in the container instead of Pi
@@ -193,6 +203,7 @@ while [ "$#" -gt 0 ]; do
     -p|--project)    need_arg "$@"; PROJECT="$2"; shift 2 ;;
     --cpus)          [ "$#" -ge 2 ] || die "--cpus requires a value"; CPUS="$2"; shift 2 ;;
     --memory)        [ "$#" -ge 2 ] || die "--memory requires a value"; MEMORY="$2"; shift 2 ;;
+    --pi-version)    need_arg "$@"; PI_VERSION="$2"; shift 2 ;;
     --rebuild)       DO_REBUILD=true; shift ;;
     --build-only)    BUILD_ONLY=true; shift ;;
     --shell)         DO_SHELL=true; shift ;;
@@ -217,6 +228,7 @@ re_mem='^[0-9]+[kKmMgG]?$'
 re_safe='^[^"\\]*$'
 re_image='^[A-Za-z0-9._/:@-]+$'
 re_pkgs='^[]A-Za-z0-9._+=<>!~,:@/ [-]*$'
+re_ver='^[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*$'
 
 [[ $BASE_URL =~ $re_url ]]       || die "invalid base URL: $BASE_URL"
 [[ $CONTEXT_WINDOW =~ $re_int ]] || die "--ctx must be an integer"
@@ -319,6 +331,51 @@ if [ "$BUILD_ONLY" = false ]; then
   [[ $MODEL_ID =~ $re_id ]] || die "invalid model id: $MODEL_ID"
   [ -n "$MODEL_NAME" ] || MODEL_NAME="$MODEL_ID"
   [[ $MODEL_NAME =~ $re_safe ]] || die "the model name cannot contain \" or \\"
+fi
+
+# ---------------------------------------------------------------------------
+# Pi version to install. With PI_VERSION="latest" the newest release is looked
+# up on npm (once a day): the resolved version takes part in the image
+# fingerprint, so a new Pi release rebuilds the image instead of leaving the
+# old one in place forever. Without network the last known version is reused.
+# ---------------------------------------------------------------------------
+LATEST_PI_FILE="$PI_BOX_HOME/.latest-pi"
+LATEST_PI_MAX_AGE_MIN=1440                        # recheck on npm once a day
+
+registry_latest_pi() {
+  local url="https://registry.npmjs.org/@earendil-works%2Fpi-coding-agent" v=""
+  if command -v curl >/dev/null 2>&1; then
+    if command -v jq >/dev/null 2>&1; then
+      v="$(curl -fsS --max-time 10 "$url" 2>/dev/null | jq -r '."dist-tags".latest // empty' 2>/dev/null)"
+    else
+      v="$(curl -fsS --max-time 10 "$url" 2>/dev/null | tr ',' '\n' | sed -n 's/.*"latest"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+    fi
+  elif command -v npm >/dev/null 2>&1; then
+    v="$(npm view @earendil-works/pi-coding-agent version 2>/dev/null | tail -n 1)"
+  fi
+  [[ "${v:-}" =~ $re_ver ]] || return 1
+  printf '%s\n' "$v"
+}
+
+PI_RESOLVED="$PI_VERSION"
+if [ "$PI_VERSION" = "latest" ]; then
+  cached="$(head -n 1 "$LATEST_PI_FILE" 2>/dev/null || true)"
+  [[ "${cached:-}" =~ $re_ver ]] || cached=""
+  if [ -n "$cached" ] && [ -n "$(find "$LATEST_PI_FILE" -mmin "-$LATEST_PI_MAX_AGE_MIN" 2>/dev/null)" ]; then
+    PI_RESOLVED="$cached"                          # recent cache: no npm request
+  else
+    newest="$(registry_latest_pi || true)"
+    if [ -n "$newest" ]; then
+      { mkdir -p "$PI_BOX_HOME" && printf '%s\n' "$newest" > "$LATEST_PI_FILE"; } 2>/dev/null || true
+      PI_RESOLVED="$newest"
+    elif [ -n "$cached" ]; then
+      PI_RESOLVED="$cached"
+      info "warning: cannot reach npm, using the cached Pi version $cached"
+    else
+      PI_RESOLVED=""
+      info "warning: cannot determine the latest Pi version on npm, keeping the image as it is (pin PI_VERSION in $CONF_FILE to avoid this)"
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -466,7 +523,7 @@ build_args() {
   printf '%s\n' \
     "BASE_IMAGE=$BASE_IMAGE" \
     "APT_EXTRA=$APT_EXTRA" \
-    "PI_VERSION=$PI_VERSION" \
+    "PI_VERSION=${PI_RESOLVED:-$PI_VERSION}" \
     "USER_UID=$IMAGE_UID" \
     "PIP_PACKAGES=$PIP_PACKAGES"
 }
@@ -489,7 +546,7 @@ build_reason() {
   if [ "$DO_REBUILD" = true ]; then echo "requested with --rebuild (from scratch, no cache)"; return; fi
   if ! image_exists; then echo "image $IMAGE not found"; return; fi
   if [ ! -f "$STAMP_FILE" ] || [ "$(cat "$STAMP_FILE")" != "$(build_stamp)" ]; then
-    echo "Containerfile or packages changed"
+    echo "Containerfile, base image, packages or Pi version changed"
   fi
 }
 

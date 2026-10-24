@@ -1,6 +1,6 @@
 # Pi with local models, sandboxed in a container (macOS and Linux)
 
-*Pi 1.1.0 · Apple `container` 1.3.1 · macOS 27 · `pi-box` 1.2 — October 2026*
+*Pi 1.4.0 · Apple `container` 1.3.1 · macOS 27 · `pi-box` 1.3 — October 2026*
 
 ## Overview
 
@@ -121,7 +121,7 @@ On each run, `pi-box`:
 3. Regenerates `models.json`, rewriting `localhost` to `host.container.internal` on macOS and to `127.0.0.1` on Linux.
 4. On macOS, starts the container service and creates the DNS name if needed.
 5. On Linux, applies `--cpus` and `--memory` only if the kernel supports them (see Troubleshooting). `--memory` comes with an equal `--memory-swap`, i.e. no extra swap.
-6. (Re)builds the image when it's missing or when the recipe, base image or package lists have changed.
+6. (Re)builds the image when it's missing or when the recipe, base image, package lists or `PI_VERSION` have changed. With `PI_VERSION="latest"` the newest release is looked up on npm once a day (`~/pi-container/.latest-pi`), so a new Pi version also triggers a rebuild.
 7. Starts Pi already connected to the model.
 
 ### Options
@@ -139,6 +139,7 @@ On each run, `pi-box`:
 | `--cpus N`, `--memory M` | `CPUS`, `MEMORY` | `4`, `4g` (`""` = no limit) |
 | — | `BASE_IMAGE` | `node:24-slim` |
 | — | `APT_EXTRA` / `PIP_PACKAGES` | extra Debian / pip packages |
+| `--pi-version VER` | `PI_VERSION` | `1.4.0` (`"latest"` = newest release on npm) |
 | `--rebuild` | — | rebuild the image from scratch (no cache) |
 | `--build-only` | — | build if needed, then exit |
 | `--shell` | — | open bash instead of Pi |
@@ -152,6 +153,7 @@ On each run, `pi-box`:
 pi-box -m gemma-4-26b-a4b-it -i -c 65536                       # multimodal model, 64K context
 pi-box -u http://192.168.1.20:8000/v1 -r on -t high -p ~/src/x  # remote thinking model
 pi-box --rebuild --build-only                                   # fresh image, don't start Pi
+pi-box --pi-version latest --build-only                         # update Pi in the image, don't start it
 ```
 
 Sessions persist in `~/pi-container/agent/sessions/`.
@@ -173,6 +175,7 @@ Sessions persist in `~/pi-container/agent/sessions/`.
 - **No display**: pygame uses the dummy video driver and matplotlib renders to files. Run games on the host to see their window.
 - **User `dev`** has your host UID, so files created in the project are yours.
 - **Anything installed during a session is lost on exit**, because the container is removed. Add it to the package lists to keep it.
+- **Pi itself comes from npm** at build time (`PI_VERSION`). To update it: set `PI_VERSION="1.4.0"` (or `"latest"`) in `pi-box.conf`, or run `pi-box --pi-version latest --build-only`; the image is rebuilt on the next run.
 
 ## 5. What the container protects
 
@@ -191,16 +194,17 @@ In short, it guards against destructive mistakes, not against data exfiltration.
 | `connection refused` to `localhost` | use `127.0.0.1` |
 | macOS: container can't reach the server after a reboot | the DNS name was lost; `pi-box` recreates it |
 | Linux: `container create failed (no logs from conmon)` or `runc … memory.max: no such file` | The kernel's memory controller is off; on Raspberry Pi the firmware adds `cgroup_disable=memory` (check `/proc/cmdline`). `pi-box` skips the limit with a warning; set `MEMORY=""` to silence it, or append `cgroup_enable=memory cgroup_memory=1` to `/boot/firmware/cmdline.txt` (single line, back it up first) and reboot. |
-| Replies truncated / context fills quickly | Match `CONTEXT_WINDOW` to the server. Pi reserves 16,384 tokens for replies (`compaction.reserveTokens` in `settings.json`); lower it for small contexts. |
+| Replies truncated / context fills quickly | Match `CONTEXT_WINDOW` to the server. `compaction.reserveTokens` in `settings.json` (default 16,384) only decides when compaction starts; lower it for small contexts. Since Pi 1.4.0, summaries use the model's output limit instead of a fixed share of the context. |
 | `pi --print` hangs in a script | add `</dev/null` |
 | Manual edits to `~/pi-container/agent/models.json` are lost | it's regenerated on every run; edit `pi-box.conf` instead |
 
 ## 7. Verification status
 
 - **Tested on real hardware**: Apple `container` 1.3.1 setup and container→host connectivity on a MacBook Air M5; Podman 5.4.2 on a Raspberry Pi 5, including the memory-limit failure that `pi-box` now handles.
-- **Tested with simulated runtimes** (bash 5.2): all `pi-box` logic, including limit detection, build, rebuild and input validation. Pi 1.1.0 accepts the generated `models.json` and sends correct requests to a mock OpenAI server.
+- **Tested with simulated runtimes** (bash 5.2): all `pi-box` logic, including limit detection, build, rebuild, `PI_VERSION` resolution and input validation. Pi 1.1.0 accepts the generated `models.json` and sends correct requests to a mock OpenAI server.
+- **Checked against Pi 1.4.0**: the generated `models.json` (`providers.local` with `api: openai-completions`, `reasoning`, `input`, `contextWindow`, `maxTokens`, `samplingParams`), the `settings.json` keys and the `--provider/--model/--thinking` options are unchanged with respect to 1.1.0 (1.2–1.4 breaking changes only affect the extension API).
 - **Tested on Ubuntu 24.04**, not inside the image: the package names, the Python stack (venv, pip, numpy/scipy, headless pygame) and a CMake project using all the C++ libraries with g++ and clang++.
-- **Not yet tested**: a real build of the 1.2 image, `pi-box` with real runtimes end to end, and macOS's bash 3.2.
+- **Not yet tested**: a real build of the 1.3 image (Pi 1.4.0), `pi-box` with real runtimes end to end, and macOS's bash 3.2.
 
 ## References
 
