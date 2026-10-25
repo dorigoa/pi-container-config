@@ -25,7 +25,7 @@ declare -A DEFAULT_MODEL=(
     [freetoken]="freetoken-default"
 )
 
-VALID_PROVIDERS=(llama mlx strata splash freetoken)
+VALID_PROVIDERS=(llama-linux llama-macos mlx strata splash freetoken)
 
 usage() {
     echo "Usage: $0 <provider> [-temp <float>]" >&2
