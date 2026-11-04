@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Avvia pi-box verso un provider locale.
-# Uso: run-pibox.sh <provider> [-temp <float>]
+# Uso: run-pibox.sh <provider> [-temp <float>] [-c|--context-size <int>] [-o|--max-tokens <int>]
 
 set -euo pipefail
 
@@ -9,8 +9,7 @@ PIBOX_CMD="${PIBOX_CMD:-pi-box}"
 
 # Default (usati se nodes.json manca o manca la voce per quel provider)
 declare -A DEFAULT_PORT=(
-    [llama-linux]=11000
-    [llama-macos]=9088
+    [llama-linux]=8080
     [mlx]=8080
     [strata]=8000
     [splash]=10000
@@ -18,7 +17,6 @@ declare -A DEFAULT_PORT=(
 )
 declare -A DEFAULT_MODEL=(
     [llama-linux]="llama-linux-default"
-    [llama-macos]="llama-macos-default"
     [mlx]="mlx-default"
     [strata]="strata-default"
     [splash]="splash-default"
@@ -28,7 +26,9 @@ declare -A DEFAULT_MODEL=(
 VALID_PROVIDERS=(llama-linux llama-macos mlx strata splash freetoken)
 
 usage() {
-    echo "Usage: $0 <provider> [-temp <float>]" >&2
+    echo "Usage: $0 <provider> [-temp <float>] [-c <context-size>] [-o <max-tokens>]" >&2
+    echo "  -c, --context-size <int>  context size (default 81920)" >&2
+    echo "  -o, --max-tokens <int>    max output tokens (default 65536)" >&2
     echo "Available providers: ${VALID_PROVIDERS[*]}" >&2
     exit 1
 }
@@ -53,6 +53,8 @@ done
 # --- Parsing argomenti -------------------------------------------------------
 provider=""
 temp=""
+context_size=""
+max_tokens=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -64,6 +66,26 @@ while [[ $# -gt 0 ]]; do
         -temp=*|--temp=*)
             temp="${1#*=}"
             [[ -n "$temp" ]] || die "option ${1%%=*} requires a value"
+            shift
+            ;;
+        -c|--context-size)
+            [[ -n "${2-}" ]] || die "option $1 requires a value"
+            context_size="$2"
+            shift 2
+            ;;
+        -c=*|--context-size=*)
+            context_size="${1#*=}"
+            [[ -n "$context_size" ]] || die "option ${1%%=*} requires a value"
+            shift
+            ;;
+        -o|--max-tokens)
+            [[ -n "${2-}" ]] || die "option $1 requires a value"
+            max_tokens="$2"
+            shift 2
+            ;;
+        -o=*|--max-tokens=*)
+            max_tokens="${1#*=}"
+            [[ -n "$max_tokens" ]] || die "option ${1%%=*} requires a value"
             shift
             ;;
         -h|--help)
@@ -89,6 +111,13 @@ if [[ -n "$temp" ]]; then
     [[ "$temp" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] \
         || die "-temp must be a non-negative number, got '$temp'"
 fi
+
+[[ -z "$context_size" || ("$context_size" =~ ^[0-9]+$ && "$context_size" -gt 0) ]] \
+    || die "--context-size must be a positive integer, got '$context_size'"
+[[ -z "$max_tokens" || ("$max_tokens" =~ ^[0-9]+$ && "$max_tokens" -gt 0) ]] \
+    || die "--max-tokens must be a positive integer, got '$max_tokens'"
+context_size="${context_size:-81920}"
+max_tokens="${max_tokens:-65536}"
 
 # --- Porta: da nodes.json, altrimenti default ---------------------------------
 port=""
@@ -117,7 +146,7 @@ else
 fi
 
 # --- Costruzione ed esecuzione comando ----------------------------------------
-cmd=("$PIBOX_CMD" -u "$base_url" -c 262144 -o 131072 -t medium -r "$reasoning" -m "$model")
+cmd=("$PIBOX_CMD" -u "$base_url" -c "$context_size" -o "$max_tokens" -t medium -r "$reasoning" -m "$model")
 if [[ -n "$temp" ]]; then
     cmd+=(--temperature "$temp")
 fi
