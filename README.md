@@ -1,6 +1,6 @@
 # Pi with local models, sandboxed in a container (macOS and Linux)
 
-*Pi (latest da npm) · Apple `container` 1.3.1 · macOS 27 · `pi-box` 1.4 — November 2026*
+*Pi (latest from npm) · Apple `container` 1.3.1 · macOS 27 · `pi-box` 1.6 — November 2026*
 
 ## Overview
 
@@ -110,9 +110,11 @@ Rootless Podman is preferred; `pi-box` falls back to Docker only if Podman is mi
 ## 3. `pi-box`: one-command launcher
 
 ```bash
-sudo install -m 755 pi-box.sh /usr/local/bin/pi-box
+sudo ln -sf "$PWD/pi-box" /usr/local/bin/pi-box   # run from this repository's folder
 cd ~/src/my-project && pi-box
 ```
+
+Install it as a **symlink**, not as a copy: a copy (`install`, `cp`) never sees later changes to the script, which is how a stale `/usr/local/bin/pi-box` kept Pi on 1.4.0 after the repository moved to 1.5.0. `pi-start` always runs the `pi-box` next to it and warns if the one in `PATH` differs.
 
 On each run, `pi-box`:
 
@@ -121,7 +123,7 @@ On each run, `pi-box`:
 3. Regenerates `models.json`, rewriting `localhost` to `host.container.internal` on macOS and to `127.0.0.1` on Linux.
 4. On macOS, starts the container service and creates the DNS name if needed.
 5. On Linux, applies `--cpus` and `--memory` only if the kernel supports them (see Troubleshooting). `--memory` comes with an equal `--memory-swap`, i.e. no extra swap.
-6. (Re)builds the image when it's missing or when the recipe, base image, package lists or `PI_VERSION` have changed. With `PI_VERSION="latest"` the newest release is looked up on npm once a day (`~/pi-container/.latest-pi`), so a new Pi version also triggers a rebuild.
+6. (Re)builds the image when it's missing or when the recipe, base image, package lists or Pi version have changed. With `PI_VERSION="latest"` (the default) the newest Pi release is looked up on npm at most once an hour (`~/pi-container/.latest-pi`), so a new Pi version triggers a rebuild; Pi sits in the last image layer, so that rebuild is quick. Offline, the Pi already in the image is kept.
 7. Starts Pi already connected to the model.
 
 ### Options
@@ -139,7 +141,7 @@ On each run, `pi-box`:
 | `--cpus N`, `--memory M` | `CPUS`, `MEMORY` | `4`, `4g` (`""` = no limit) |
 | — | `BASE_IMAGE` | `node:24-slim` |
 | — | `APT_EXTRA` / `PIP_PACKAGES` | extra Debian / pip packages |
-| `--pi-version VER` | `PI_VERSION` | `1.5.0` (`"latest"` = newest release on npm) |
+| `--pi-version VER` | `PI_VERSION` | `latest` = newest release on npm (uncomment `PI_VERSION` in `pi-box.conf` to pin one) |
 | `--rebuild` | — | rebuild the image from scratch (no cache) |
 | `--build-only` | — | build if needed, then exit |
 | `--shell` | — | open bash instead of Pi |
@@ -153,7 +155,7 @@ On each run, `pi-box`:
 pi-box -m gemma-4-26b-a4b-it -i -c 65536                       # multimodal model, 64K context
 pi-box -u http://192.168.1.20:8000/v1 -r on -t high -p ~/src/x  # remote thinking model
 pi-box --rebuild --build-only                                   # fresh image, don't start Pi
-pi-box --pi-version latest --build-only                         # update Pi in the image, don't start it
+pi-box --build-only                                             # update Pi to the newest release now, don't start it
 ```
 
 Sessions persist in `~/pi-container/agent/sessions/`.
@@ -175,7 +177,7 @@ Sessions persist in `~/pi-container/agent/sessions/`.
 - **No display**: pygame uses the dummy video driver and matplotlib renders to files. Run games on the host to see their window.
 - **User `dev`** has your host UID, so files created in the project are yours.
 - **Anything installed during a session is lost on exit**, because the container is removed. Add it to the package lists to keep it.
-- **Pi itself comes from npm** at build time (`PI_VERSION`). The default is pinned to `1.5.0`, so the container always gets the version you expect. To track new releases automatically set `PI_VERSION="latest"` in `pi-box.conf`: pi-box resolves the newest npm release once a day and rebuilds the image when it changes. To update to another version immediately: `pi-box --pi-version <VER> --build-only`.
+- **Pi itself comes from npm** at build time (`PI_VERSION`). The default, `"latest"`, keeps the container up to date: pi-box checks npm at most once an hour and rebuilds the image when a new Pi comes out (`pi-box --build-only` checks right away). To freeze Pi on a release, uncomment `PI_VERSION` in `pi-box.conf`, or pass `--pi-version <VER>`. A `pi-box.conf` written by pi-box ≤ 1.5 contains that release's default (e.g. `PI_VERSION="1.4.0"`), which used to pin Pi silently: pi-box 1.6 comments it out once, keeping a backup of the file.
 
 ## 5. What the container protects
 

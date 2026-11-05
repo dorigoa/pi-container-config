@@ -9,6 +9,21 @@
 #
 # Compatible with macOS's bash 3.2.
 #
+# Version 1.6 (2026-11-05)
+#   - Fix: Pi stayed on 1.4.0. pi-box.conf, written by an older pi-box, held
+#     that release's built-in default PI_VERSION="1.4.0": sourced on every run,
+#     it overrode every later default. (On top of that, /usr/local/bin/pi-box
+#     was a stale copy of this script: install it as a symlink, see README.)
+#   - PI_VERSION defaults to "latest": the newest Pi release on npm, checked
+#     at most once an hour (always with --rebuild/--build-only); a new release
+#     rebuilds the image. Without network the Pi already in the image is kept.
+#   - pi-box.conf no longer pins PI_VERSION. Old conf files are migrated once
+#     (backup kept): a PI_VERSION equal to an old built-in default (1.1.0,
+#     1.4.0, 1.5.0) is commented out; any other version is a deliberate pin
+#     and is kept. Removed the 1.5 migration, which turned "latest" into 1.5.0.
+#   - Pi is installed in the last image layer: a new release rebuilds only it.
+#   - --build-only no longer creates the host.container.internal DNS name
+#     (sudo prompt on macOS): it is only needed to run Pi.
 # Version 1.5 (2026-11-05)
 #   - PI_VERSION default is now pinned to "1.5.0" (was "latest"): the npm
 #     resolution/caching could leave the image on a stale Pi release (1.4.0).
@@ -38,13 +53,15 @@
 #     controllers; --memory-swap equal to --memory. "localhost" -> 127.0.0.1.
 set -euo pipefail
 
-PI_BOX_VERSION="1.5"
+PI_BOX_VERSION="1.6"
 PI_BOX_HOME="${PI_BOX_HOME:-$HOME/pi-container}"
 CGROUP_ROOT="${PI_BOX_CGROUP_ROOT:-/sys/fs/cgroup}"   # override for testing only
 CONF_FILE="$PI_BOX_HOME/pi-box.conf"
 AGENT_DIR="$PI_BOX_HOME/agent"
 IMAGE_DIR="$PI_BOX_HOME/image"
 STAMP_FILE="$IMAGE_DIR/.build-stamp"
+PI_BUILT_FILE="$IMAGE_DIR/.pi-version"   # Pi version installed in the image
+CONF_FORMAT=2                            # current format of pi-box.conf (see migrate_conf)
 
 die()  { printf 'pi-box: ERROR: %s\n' "$*" >&2; exit 1; }
 info() { printf 'pi-box: %s\n' "$*" >&2; }
@@ -68,7 +85,7 @@ CPUS=4                                # empty = no limit
 MEMORY=4g                             # empty = no limit
 OFFLINE=true                          # disables Pi's automatic network activity
 IMAGE="pi-box:latest"
-PI_VERSION="1.5.0"                    # Pi npm version to install in the image ("latest" = newest release on npm)
+PI_VERSION="latest"                   # Pi npm version in the image ("latest" = newest release on npm)
 BASE_IMAGE="node:24-slim"             # base image (Debian + Node.js)
 APT_EXTRA=""                          # extra Debian packages
 PIP_PACKAGES="ruff mypy rich tqdm click httpx ipython"   # extra pip packages
@@ -100,15 +117,18 @@ OFFLINE=true
 
 # --- Image (changing these triggers an automatic rebuild) --------------------
 IMAGE="pi-box:latest"
-# Pi version inside the image: pinned to a specific release; set "latest" to
-# make pi-box resolve the newest release on npm once a day and rebuild the
-# image when it changes.
-PI_VERSION="1.5.0"
+# Pi version inside the image. By default pi-box installs the newest release
+# on npm (checked at most once an hour) and rebuilds the image when a new one
+# comes out. Uncomment only to freeze Pi on a specific release:
+#PI_VERSION="1.5.0"
 BASE_IMAGE="node:24-slim"             # e.g. node:24-trixie-slim to pin Debian 13
 # Extra Debian packages, space-separated (e.g. "libopencv-dev octave")
 APT_EXTRA=""
 # Extra pip packages, installed into /opt/venv (e.g. "polars torch==2.5.1")
 PIP_PACKAGES="ruff mypy rich tqdm click httpx ipython"
+
+# Format of this file, used by pi-box to migrate it: do not change.
+PI_BOX_CONF_FORMAT=2
 EOF
   info "wrote configuration file $CONF_FILE"
 }
@@ -137,8 +157,8 @@ Container
   -p, --project DIR       project folder mounted at /work (default: current folder)
       --cpus N            CPU limit ("" = none)
       --memory M          RAM limit, e.g. 4g ("" = none)
-      --pi-version VER    Pi version to install in the image (default: 1.5.0;
-                          "latest" = newest release on npm)
+      --pi-version VER    Pi version to install in the image (default: latest,
+                          the newest release on npm, checked once an hour)
       --rebuild           rebuild the image from scratch (no cache), then start
       --build-only        (re)build the image if needed, then exit
       --shell             open a bash shell in the container instead of Pi
@@ -178,23 +198,41 @@ done
 
 if [ "${NEED_HELP:-false}" = true ]; then usage; exit 0; fi
 
-if [ -f "$CONF_FILE" ]; then
-  # shellcheck source=/dev/null
-  . "$CONF_FILE"
-else
-  write_default_conf
-fi
+# pi-box <= 1.5 wrote its own built-in default PI_VERSION (1.1.0, 1.4.0 or
+# 1.5.0) into pi-box.conf: sourced on every run, that line kept Pi on an old
+# release even after pi-box itself was updated. Old conf files (without
+# PI_BOX_CONF_FORMAT) are migrated once, keeping a backup: such a line is
+# commented out, so the built-in default ("latest") applies; any other version
+# is a deliberate pin and is kept. --pi-version still overrides everything.
+migrate_conf() {
+  local pinned="" unpin=false bak tmp="$CONF_FILE.tmp"
+  if grep -Eq '^[[:space:]]*PI_VERSION=' "$CONF_FILE"; then pinned="$PI_VERSION"; fi
+  case "$pinned" in
+    1.1.0|1.4.0|1.5.0)
+      unpin=true
+      PI_VERSION="latest"     # even if the file cannot be updated below
+      info "$CONF_FILE: PI_VERSION=\"$pinned\" is the default of an older pi-box and kept Pi on that release: commenting it out, Pi now follows the newest release on npm" ;;
+    ""|latest) ;;
+    *) info "$CONF_FILE pins PI_VERSION=\"$pinned\": kept (comment it out to follow the newest Pi release on npm)" ;;
+  esac
+  bak="$CONF_FILE.bak-$(date +%Y%m%d-%H%M%S)"
+  { cp -p "$CONF_FILE" "$bak" && cp -p "$CONF_FILE" "$tmp"; } || return 1   # tmp keeps the file mode
+  if [ "$unpin" = true ]; then
+    sed -E 's/^([[:space:]]*)(PI_VERSION=)/\1#\2/' "$CONF_FILE" > "$tmp" || return 1
+  fi
+  printf '\n# Format of this file, used by pi-box to migrate it: do not change.\nPI_BOX_CONF_FORMAT=%s\n' \
+    "$CONF_FORMAT" >> "$tmp" || return 1
+  mv -f "$tmp" "$CONF_FILE" || return 1
+  info "updated $CONF_FILE (backup: $bak)"
+}
 
-# Migration: old pi-box releases shipped a pinned PI_VERSION as the default,
-# which kept the image on a stale Pi release forever (e.g. 1.4.0). Migrate
-# those legacy defaults to the current default "1.5.0"; any other explicit pin
-# is kept as it is, and --pi-version on the command line still overrides
-# everything.
-case "${PI_VERSION:-}" in
-  latest|1.1.0|1.4.0)
-    info "PI_VERSION=$PI_VERSION was a built-in default of an older pi-box: switching to '1.5.0' (edit $CONF_FILE to pin another version or set 'latest')"
-    PI_VERSION="1.5.0" ;;
-esac
+PI_BOX_CONF_FORMAT=1                  # conf files without this key predate pi-box 1.6
+[ -f "$CONF_FILE" ] || write_default_conf
+# shellcheck source=/dev/null
+. "$CONF_FILE"
+if [ "$PI_BOX_CONF_FORMAT" = 1 ]; then
+  migrate_conf || info "warning: cannot update $CONF_FILE (retrying at the next run)"
+fi
 
 need_arg() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "option $1 requires a value"; }
 
@@ -355,21 +393,23 @@ if [ "$BUILD_ONLY" = false ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Pi version to install. With PI_VERSION="latest" the newest release is looked
-# up on npm (once a day): the resolved version takes part in the image
-# fingerprint, so a new Pi release rebuilds the image instead of leaving the
-# old one in place forever. Without network the last known version is reused.
+# Pi version to install. With PI_VERSION="latest" (the default) the newest
+# release is looked up on npm at most once an hour, and always with --rebuild
+# or --build-only: the resolved version takes part in the image fingerprint, so
+# a new Pi release rebuilds the image. Without network the Pi already in the
+# image is kept (instead of attempting a rebuild that would fail offline).
 # ---------------------------------------------------------------------------
-LATEST_PI_FILE="$PI_BOX_HOME/.latest-pi"
-LATEST_PI_MAX_AGE_MIN=1440                        # recheck on npm once a day
+LATEST_PI_FILE="$PI_BOX_HOME/.latest-pi"          # newest version seen on npm
+LATEST_PI_MAX_AGE_MIN=60                          # recheck on npm once an hour
 
 registry_latest_pi() {
-  local url="https://registry.npmjs.org/@earendil-works%2Fpi-coding-agent" v=""
+  # dist-tags only: a few bytes instead of the whole package document (~300 KB)
+  local url="https://registry.npmjs.org/-/package/@earendil-works%2Fpi-coding-agent/dist-tags" v=""
   if command -v curl >/dev/null 2>&1; then
     if command -v jq >/dev/null 2>&1; then
-      v="$(curl -fsS --max-time 10 "$url" 2>/dev/null | jq -r '."dist-tags".latest // empty' 2>/dev/null)"
+      v="$(curl -fsS --max-time 5 "$url" 2>/dev/null | jq -r '.latest // empty' 2>/dev/null)"
     else
-      v="$(curl -fsS --max-time 10 "$url" 2>/dev/null | tr ',' '\n' | sed -n 's/.*"latest"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+      v="$(curl -fsS --max-time 5 "$url" 2>/dev/null | tr ',{}' '\n\n\n' | sed -n 's/^[[:space:]]*"latest"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
     fi
   elif command -v npm >/dev/null 2>&1; then
     v="$(npm view @earendil-works/pi-coding-agent version 2>/dev/null | tail -n 1)"
@@ -382,19 +422,24 @@ PI_RESOLVED="$PI_VERSION"
 if [ "$PI_VERSION" = "latest" ]; then
   cached="$(head -n 1 "$LATEST_PI_FILE" 2>/dev/null || true)"
   [[ "${cached:-}" =~ $re_ver ]] || cached=""
-  if [ -n "$cached" ] && [ -n "$(find "$LATEST_PI_FILE" -mmin "-$LATEST_PI_MAX_AGE_MIN" 2>/dev/null)" ]; then
-    PI_RESOLVED="$cached"                          # recent cache: no npm request
+  if [ -n "$cached" ] && [ "$DO_REBUILD" = false ] && [ "$BUILD_ONLY" = false ] \
+     && [ -n "$(find "$LATEST_PI_FILE" -mmin "-$LATEST_PI_MAX_AGE_MIN" 2>/dev/null)" ]; then
+    PI_RESOLVED="$cached"                          # checked less than an hour ago
   else
     newest="$(registry_latest_pi || true)"
     if [ -n "$newest" ]; then
       { mkdir -p "$PI_BOX_HOME" && printf '%s\n' "$newest" > "$LATEST_PI_FILE"; } 2>/dev/null || true
       PI_RESOLVED="$newest"
-    elif [ -n "$cached" ]; then
-      PI_RESOLVED="$cached"
-      info "warning: cannot reach npm, using the cached Pi version $cached"
     else
-      PI_RESOLVED=""
-      info "warning: cannot determine the latest Pi version on npm, keeping the image as it is (pin PI_VERSION in $CONF_FILE to avoid this)"
+      # offline: keep the Pi already in the image, else the last version seen
+      built="$(head -n 1 "$PI_BUILT_FILE" 2>/dev/null || true)"
+      [[ "${built:-}" =~ $re_ver ]] || built=""
+      PI_RESOLVED="${built:-$cached}"
+      if [ -n "$PI_RESOLVED" ]; then
+        info "warning: cannot reach npm to look for a newer Pi, keeping Pi $PI_RESOLVED"
+      else
+        info "warning: cannot reach npm to find the newest Pi release"
+      fi
     fi
   fi
 fi
@@ -496,11 +541,6 @@ RUN set -f; if [ -n "$APT_EXTRA" ]; then \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 
-# --- Pi (--ignore-scripts: no npm install scripts are run) ---------------------
-ARG PI_VERSION=latest
-RUN npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
- && npm cache clean --force
-
 # --- Non-root user with the same UID as the host user ------------------------
 # If the UID is already taken (e.g. user "node" with UID 1000), that user is removed.
 ARG USER_UID=1000
@@ -529,6 +569,15 @@ ENV HOME=/home/dev \
 # --- Extra pip packages (PIP_PACKAGES) ------------------------------------------
 ARG PIP_PACKAGES=""
 RUN set -f; if [ -n "$PIP_PACKAGES" ]; then pip install --no-cache-dir $PIP_PACKAGES; fi
+
+# --- Pi, in the last layer: a new Pi release rebuilds only this step ------------
+# (--ignore-scripts: no npm install scripts are run; HOME=/root keeps npm's
+# cache and logs out of /home/dev)
+USER root
+ARG PI_VERSION=latest
+RUN HOME=/root npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+ && HOME=/root npm cache clean --force
+USER dev
 
 WORKDIR /work
 CMD ["pi"]
@@ -593,7 +642,12 @@ build_image() {
   rm -f "$STAMP_FILE"
   "$RT" "${args[@]}"
   build_stamp > "$STAMP_FILE"
-  info "image $IMAGE ready"
+  if [[ ${PI_RESOLVED:-} =~ $re_ver ]]; then
+    printf '%s\n' "$PI_RESOLVED" > "$PI_BUILT_FILE"
+  else
+    rm -f "$PI_BUILT_FILE"
+  fi
+  info "image $IMAGE ready (Pi ${PI_RESOLVED:-$PI_VERSION})"
 }
 
 # ---------------------------------------------------------------------------
@@ -604,6 +658,7 @@ macos_prepare() {
     info "starting the container service..."
     container system start
   fi
+  [ "$BUILD_ONLY" = false ] || return 0     # the DNS name is only needed to run Pi
   case "$CONTAINER_BASE_URL" in
     *://host.container.internal*)
       local domains
@@ -734,5 +789,5 @@ fi
 if [ "$BUILD_ONLY" = true ]; then exit 0; fi
 
 write_agent_config
-info "starting Pi ($MODEL_ID) on $PROJECT"
+info "starting Pi ${PI_RESOLVED:-$PI_VERSION} ($MODEL_ID) on $PROJECT"
 exec "$RT" "${RUN_ARGS[@]}"

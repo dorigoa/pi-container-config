@@ -5,7 +5,19 @@
 set -euo pipefail
 
 NODES_JSON="${HOME}/ai-console/nodes.json"
-PIBOX_CMD="${PIBOX_CMD:-pi-box}"
+
+# pi-box della stessa cartella di questo script (symlink risolti): pi-start usa
+# sempre il pi-box del proprio checkout, non una copia magari vecchia nel PATH
+# (es. /usr/local/bin/pi-box installato con "install" e mai aggiornato).
+self="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$self")" && pwd)"
+if [[ -z "${PIBOX_CMD:-}" ]]; then
+    if [[ -x "$SCRIPT_DIR/pi-box" ]]; then
+        PIBOX_CMD="$SCRIPT_DIR/pi-box"
+    else
+        PIBOX_CMD=pi-box
+    fi
+fi
 
 # Default (usati se nodes.json manca o manca la voce per quel provider)
 declare -A DEFAULT_PORT=(
@@ -50,6 +62,15 @@ is_valid_provider() {
 for bin in jq curl "$PIBOX_CMD"; do
     command -v "$bin" >/dev/null 2>&1 || die "'$bin' not found in PATH"
 done
+
+# Un pi-box nel PATH diverso da questo è una copia non aggiornata: è quello che
+# parte lanciando pi-box (o launch-pi-*.sh) direttamente, quindi lo segnaliamo.
+if [[ "$PIBOX_CMD" == "$SCRIPT_DIR/pi-box" ]]; then
+    path_pibox="$(command -v pi-box 2>/dev/null || true)"
+    if [[ -n "$path_pibox" && "$path_pibox" == /* ]] && ! cmp -s "$path_pibox" "$PIBOX_CMD"; then
+        echo "Warning: $path_pibox differs from $PIBOX_CMD (used here); to keep it in sync: sudo ln -sf '$PIBOX_CMD' '$path_pibox'" >&2
+    fi
+fi
 
 # --- Parsing argomenti -------------------------------------------------------
 provider=""
