@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Avvia pi-box verso un provider locale.
-# Uso: run-pibox.sh <provider> [-temp <float>] [-c|--context-size <int>] [-o|--max-tokens <int>]
+# Uso: run-pibox.sh <provider> [-temp <float>] [-c|--context-size <int>] [-o|--max-tokens <int>] [-e|--endpoint <hostname:port>]
 
 set -euo pipefail
 
@@ -26,9 +26,10 @@ declare -A DEFAULT_MODEL=(
 VALID_PROVIDERS=(llama-linux llama-macos mlx strata splash freetoken)
 
 usage() {
-    echo "Usage: $0 <provider> [-temp <float>] [-c <context-size>] [-o <max-tokens>]" >&2
+    echo "Usage: $0 <provider> [-temp <float>] [-c <context-size>] [-o <max-tokens>] [-e <endpoint>]" >&2
     echo "  -c, --context-size <int>  context size (default 81920)" >&2
     echo "  -o, --max-tokens <int>    max output tokens (default 65536)" >&2
+    echo "  -e, --endpoint <host:port> LLM endpoint override (default: from nodes.json/local port)" >&2
     echo "Available providers: ${VALID_PROVIDERS[*]}" >&2
     exit 1
 }
@@ -55,6 +56,7 @@ provider=""
 temp=""
 context_size=""
 max_tokens=""
+endpoint=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -88,6 +90,16 @@ while [[ $# -gt 0 ]]; do
             [[ -n "$max_tokens" ]] || die "option ${1%%=*} requires a value"
             shift
             ;;
+        -e|--endpoint)
+            [[ -n "${2-}" ]] || die "option $1 requires a value"
+            endpoint="$2"
+            shift 2
+            ;;
+        -e=*|--endpoint=*)
+            endpoint="${1#*=}"
+            [[ -n "$endpoint" ]] || die "option ${1%%=*} requires a value"
+            shift
+            ;;
         -h|--help)
             usage
             ;;
@@ -119,16 +131,22 @@ fi
 context_size="${context_size:-81920}"
 max_tokens="${max_tokens:-65536}"
 
-# --- Porta: da nodes.json, altrimenti default ---------------------------------
-port=""
-if [[ -r "$NODES_JSON" ]]; then
-    port=$(jq -r --arg p "$provider" '.NODES[$p].api_port // empty' "$NODES_JSON") \
-        || die "cannot parse $NODES_JSON"
-fi
-port="${port:-${DEFAULT_PORT[$provider]}}"
-[[ "$port" =~ ^[0-9]+$ ]] || die "invalid port '$port' for provider '$provider'"
+# --- Endpoint: da riga di comando, altrimenti porta da nodes.json/default -----
+if [[ -n "$endpoint" ]]; then
+    [[ "$endpoint" =~ ^[A-Za-z0-9._-]+:[0-9]+$ ]] \
+        || die "-e/--endpoint must be hostname:port, got '$endpoint'"
+    base_url="http://${endpoint}/v1"
+else
+    port=""
+    if [[ -r "$NODES_JSON" ]]; then
+        port=$(jq -r --arg p "$provider" '.NODES[$p].api_port // empty' "$NODES_JSON") \
+            || die "cannot parse $NODES_JSON"
+    fi
+    port="${port:-${DEFAULT_PORT[$provider]}}"
+    [[ "$port" =~ ^[0-9]+$ ]] || die "invalid port '$port' for provider '$provider'"
 
-base_url="http://localhost:${port}/v1"
+    base_url="http://localhost:${port}/v1"
+fi
 
 # --- Modello: dal server, altrimenti default ----------------------------------
 models_json=$(curl -fsS --max-time 10 "${base_url}/models") \
