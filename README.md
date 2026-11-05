@@ -1,6 +1,6 @@
 # Pi with local models, sandboxed in a container (macOS and Linux)
 
-*Pi 1.4.0 · Apple `container` 1.3.1 · macOS 27 · `pi-box` 1.3 — October 2026*
+*Pi (latest da npm) · Apple `container` 1.3.1 · macOS 27 · `pi-box` 1.4 — November 2026*
 
 ## Overview
 
@@ -139,7 +139,7 @@ On each run, `pi-box`:
 | `--cpus N`, `--memory M` | `CPUS`, `MEMORY` | `4`, `4g` (`""` = no limit) |
 | — | `BASE_IMAGE` | `node:24-slim` |
 | — | `APT_EXTRA` / `PIP_PACKAGES` | extra Debian / pip packages |
-| `--pi-version VER` | `PI_VERSION` | `1.4.0` (`"latest"` = newest release on npm) |
+| `--pi-version VER` | `PI_VERSION` | `latest` (newest release on npm; pin e.g. `1.5.0` to freeze) |
 | `--rebuild` | — | rebuild the image from scratch (no cache) |
 | `--build-only` | — | build if needed, then exit |
 | `--shell` | — | open bash instead of Pi |
@@ -175,7 +175,7 @@ Sessions persist in `~/pi-container/agent/sessions/`.
 - **No display**: pygame uses the dummy video driver and matplotlib renders to files. Run games on the host to see their window.
 - **User `dev`** has your host UID, so files created in the project are yours.
 - **Anything installed during a session is lost on exit**, because the container is removed. Add it to the package lists to keep it.
-- **Pi itself comes from npm** at build time (`PI_VERSION`). To update it: set `PI_VERSION="1.4.0"` (or `"latest"`) in `pi-box.conf`, or run `pi-box --pi-version latest --build-only`; the image is rebuilt on the next run.
+- **Pi itself comes from npm** at build time (`PI_VERSION`). The default, `"latest"`, keeps the container up to date automatically: pi-box resolves the newest npm release once a day and rebuilds the image when it changes. Only if you pinned a version in `pi-box.conf` will Pi stay frozen — remove the pin (or set `PI_VERSION="latest"`) to resume automatic updates. To update immediately: `pi-box --pi-version latest --build-only`.
 
 ## 5. What the container protects
 
